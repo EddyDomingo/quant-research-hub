@@ -1,0 +1,78 @@
+## Mean-reversion Algorithm
+
+import yfinance as yf
+import pandas as pd
+import warnings
+warnings.filterwarnings('ignore')
+
+def compute_rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0).rolling(window=period).mean()
+    loss = -delta.clip(upper=0).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+# Get S&P 500 tickers
+#tickers = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", header=0)[0]['Symbol']
+#tickers = [t.replace('.', '-') for t in tickers]
+
+# Get Nasdaq-100 tickers
+tickers = pd.read_html("https://en.wikipedia.org/wiki/Nasdaq-100", header=0)[4]['Ticker']
+tickers = [t.replace('.', '-') for t in tickers]
+
+# Download price data
+data = yf.download(tickers, period="7mo", interval="1d", auto_adjust=True)['Close']
+data = data.dropna(axis=1, thresh=100)
+
+# Calculate 50-day moving average
+dma_50 = data.rolling(window=50).mean()
+latest_price = data.iloc[-1]
+latest_dma = dma_50.iloc[-1]
+
+# Keep only stocks trading BELOW their 50-DMA (mean-reversion trigger)
+below_dma_tickers = latest_price[latest_price < latest_dma].index
+data = data[below_dma_tickers]
+
+# Calculate RSI and keep only NOT overbought stocks (RSI <= 70)
+rsi_values = {ticker: compute_rsi(data[ticker]).iloc[-1] for ticker in data.columns}
+rsi_series = pd.Series(rsi_values)
+filtered_data = data[rsi_series[rsi_series <= 70].index]
+
+# Rank by worst 6-month return (lowest performers) → reversion expectation
+returns = ((filtered_data.iloc[-1] / filtered_data.iloc[0]) - 1).sort_values()
+top_returns = returns.head(5).reset_index()
+top_returns.columns = ['Ticker', '6M Return']
+top_returns['6M Return'] = (top_returns['6M Return'] * 100).round(2)
+
+# Display top 5 mean-reversion candidates
+print("Top 5 Mean-Reversion Candidates (Weakest 6-Month Returns):\n")
+print(f"{'Ticker':<10}{'6M Return (%)':>15}")
+print("-" * 25)
+for _, row in top_returns.iterrows():
+    print(f"{row['Ticker']:<10}{row['6M Return']:>15.2f}")
+
+# Allocate $10,000 equally to top 3
+capital = 10000
+top3 = top_returns.head(3)
+allocation_per_stock = capital / 3
+latest_prices = yf.download(list(top3['Ticker']), period="1d")['Close'].iloc[-1]
+
+# Build allocation table with 50-DMA included
+alloc_df = pd.DataFrame([{
+    'Ticker': t,
+    'Price': round(latest_prices[t], 2),
+    '50-DMA': round(latest_dma[t], 2),
+    'Shares': int(allocation_per_stock // latest_prices[t]),
+    'Invested': round((allocation_per_stock // latest_prices[t]) * latest_prices[t], 2)
+} for t in top3['Ticker']])
+
+# Add total row
+alloc_df.loc[len(alloc_df)] = ['Total', '', '', '', round(alloc_df['Invested'].sum(), 2)]
+
+# Print allocation table
+print("\nSuggested Allocation of $10,000:\n")
+print(f"{'Ticker':<10}{'Price':>10}{'50-DMA':>10}{'Shares':>10}{'Invested':>12}")
+print("-" * 54)
+
+for _, row in alloc_df.iterrows():
+    print(f"{row['Ticker']:<10}{row['Price']:>10}{row['50-DMA']:>10}{row['Shares']:>10}{row['Invested']:>12}")
